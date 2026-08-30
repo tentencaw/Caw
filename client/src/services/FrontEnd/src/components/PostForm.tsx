@@ -516,6 +516,14 @@ const PostForm: React.FC<PostFormProps> = ({ replyTo, quote, onSuccess, placehol
   // stays false → commit normally) from a genuine CJK session (compositionstart
   // fired first → ref is true → defer commit to compositionEnd, preserving #322).
   const isComposingRef = useRef(false)
+  // When a commit pushes text past the byte limit, the split mounts a NEW
+  // chunk textarea while the browser is still closing the composition, and
+  // fires a SECOND compositionend on that new element (measured: CE i3 L142
+  // then CE i4 L138, on both Blink and Gecko). That echo is the same
+  // composition; committing it re-applies stale text and strips the
+  // uncommitted romaji. Ignore an end that lands in the same tick.
+  const pendingCommitRef = useRef(0)
+  const [, setResplitTick] = useState(0)
   const frozenChunksRef = useRef<{ chunkCount: number; chunkBoundaries: number[] } | null>(null)
   // Firefox hands us e.currentTarget.value === "" at compositionend even though
   // the composition succeeded — the composed text only appears on the `input`
@@ -895,6 +903,11 @@ const PostForm: React.FC<PostFormProps> = ({ replyTo, quote, onSuccess, placehol
   // can defer commit reliably, without trusting e.nativeEvent.isComposing
   // (which Android WebView mis-reports for plain Latin typing).
   const handleCompositionStart = () => {
+    // The user kept typing — hold the pending split (see makeChunkCompositionEnd).
+    if (pendingCommitRef.current) {
+      clearTimeout(pendingCommitRef.current)
+      pendingCommitRef.current = 0
+    }
     isComposingRef.current = true
     lastComposedRef.current = null
   }
@@ -923,7 +936,6 @@ const PostForm: React.FC<PostFormProps> = ({ replyTo, quote, onSuccess, placehol
   // compositionEnd that does the same commit path instead of setText.
   const makeChunkCompositionEnd = (i: number) =>
     (e: React.CompositionEvent<HTMLTextAreaElement>) => {
-      isComposingRef.current = false
       const ta = e.currentTarget
       // Same captured-value-wins logic as handleCompositionEnd (Firefox ta.value
       // lags one composition behind).
@@ -932,9 +944,41 @@ const PostForm: React.FC<PostFormProps> = ({ replyTo, quote, onSuccess, placehol
       const committed = captured?.value ?? ta.value
       const localCursor = captured?.caret ?? ta.selectionStart ?? committed.length
       pendingMasterCursorRef.current = chunkBoundaries[i] + localCursor
+      // A Japanese IME auto-commits the previous conversion when the user
+      // starts typing the next word, so compositionend does NOT mean "the
+      // user is done" — it can be mid-sentence. Committing right here lets
+      // the split mount a new textarea while the next composition is already
+      // starting, and its uncommitted romaji is stranded on the old element.
+      // Hold the commit until the input actually settles: if another
+      // compositionstart arrives first, that start cancels this timer and
+      // re-holds, so a run of conversions splits once, at the end.
       replaceChunk(i, committed)
       setActiveChunkIndex(i)
       setActiveChunkCursor(localCursor)
+      // Only hold the layout when this commit actually changes the split.
+      // Away from a boundary the re-split is a no-op, so release immediately
+      // and keep the normal (uninstrumented) behaviour.
+      const nextText = text.slice(0, chunkBoundaries[i]) + committed +
+        text.slice(chunkBoundaries[i + 1] ?? text.length)
+      const nextCount = getChunkInfo(
+        nextText,
+        includePageIndicators,
+        firstChunkMediaCost + firstChunkPollCost,
+        lastChunkMediaCost + lastChunkPollCost,
+      ).chunkCount
+      if (nextCount === chunkCount) {
+        isComposingRef.current = false
+        return
+      }
+      // Commit the text immediately, but keep the chunk LAYOUT frozen until
+      // the input settles. Re-splitting here would mount a new textarea
+      // while the next composition is already starting.
+      if (pendingCommitRef.current) clearTimeout(pendingCommitRef.current)
+      pendingCommitRef.current = window.setTimeout(() => {
+        pendingCommitRef.current = 0
+        isComposingRef.current = false
+        setResplitTick(t => t + 1)
+      }, 120)
     }
 
   // iOS WebKit (reported by zinsanjp: on-screen JA IME in Chrome for iOS,
