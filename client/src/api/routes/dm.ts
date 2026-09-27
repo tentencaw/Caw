@@ -145,6 +145,24 @@ router.post('/identity/relay', async (req: Request, res: Response) => {
     // relayed walletAddress so the reconciliation pass can verify it once
     // NftTransferWatcher populates User.address.
     const isTentative = !localUser || !localUser.address
+    // Integrity: a relay may CREATE an identity or re-assert the same key, but
+    // it must not silently REPLACE an existing key with a different one. This
+    // route proves only that the SENDING node's validator signed the envelope
+    // and that walletAddress matches our local User row — not that the key
+    // holder authorised this publicKey. A wallet-signed proof of
+    // (userId, publicKey) once did (DmIdentity.walletProof, added in a543c6a8),
+    // but it was reverted in 91cc5ed5, leaving the column and a stale comment in
+    // dmSenderSig.ts with nothing populating or checking it. Until it is
+    // restored, refuse a differing key from a relay so a registered node cannot
+    // swap another node's user's DM public key (receivers would then encrypt to
+    // the attacker's key). New registrations and re-asserts of the same key are
+    // unaffected; the legitimate path is POST /identity, which is session-authed
+    // and owner-checked, and fans out from there.
+    const existingKey = await dmService.getPublicKey(Number(userId))
+    if (existingKey && existingKey !== publicKey) {
+      return res.status(409).json({ error: 'Identity already registered with a different key' })
+    }
+
     await dmService.registerIdentity(Number(userId), walletAddress, publicKey)
     if (isTentative) {
       // Write relayedWalletAddress so the reconciler can tombstone this row
