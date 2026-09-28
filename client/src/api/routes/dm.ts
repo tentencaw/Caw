@@ -176,6 +176,21 @@ router.post('/identity/relay', async (req: Request, res: Response) => {
     }
 
     await dmService.registerIdentity(Number(userId), walletAddress, publicKey)
+    if (!isTentative) {
+      // The owner check above ran before this write. If NftTransferWatcher
+      // moved the token in between, a clear of the previous owner's key may
+      // already have passed; re-read and undo so that key cannot land after it.
+      // The check required a match, so a mismatch here means the token moved.
+      const now = await prisma.user.findUnique({ where: { tokenId: Number(userId) }, select: { address: true } })
+      if (now?.address?.toLowerCase() !== walletAddress.toLowerCase()) {
+        await prisma.dmIdentity.updateMany({
+          where: { userId: Number(userId), publicKey, walletAddress: { equals: walletAddress, mode: 'insensitive' } },
+          data: { publicKey: '' },
+        })
+        console.warn(`[DM Identity Relay] undid key for userId=${Number(userId)}: owner changed during relay`)
+        return res.status(409).json({ error: 'ownership changed during relay' })
+      }
+    }
     if (isTentative) {
       // Write relayedWalletAddress so the reconciler can tombstone this row
       // if the on-chain owner turns out to differ. Use upsert-style update
