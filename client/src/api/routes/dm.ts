@@ -158,8 +158,20 @@ router.post('/identity/relay', async (req: Request, res: Response) => {
     // the attacker's key). New registrations and re-asserts of the same key are
     // unaffected; the legitimate path is POST /identity, which is session-authed
     // and owner-checked, and fans out from there.
-    const existingKey = await dmService.getPublicKey(Number(userId))
-    if (existingKey && existingKey !== publicKey) {
+    const existing = await prisma.dmIdentity.findUnique({
+      where: { userId: Number(userId) },
+      select: { publicKey: true, walletAddress: true },
+    })
+    // A different key is accepted only as a new owner's first key: this node
+    // already knows the on-chain owner (not tentative), the relayed wallet is
+    // that owner (checked above), and the stored key was registered for a
+    // different wallet — a previous owner. The key is derived deterministically
+    // from the owner's signature over an immutable username, so the same owner
+    // never legitimately changes it; a different key for the same wallet is
+    // still refused. (publicKey '' is ensureDmIdentity's placeholder = no key.)
+    const sameOwner = existing?.walletAddress?.toLowerCase() === walletAddress.toLowerCase()
+    if (existing?.publicKey && existing.publicKey !== publicKey && (isTentative || sameOwner)) {
+      console.warn(`[DM Identity Relay] refused a different key for userId=${Number(userId)} from instance ${Number(sourceInstanceId)}${isTentative ? ' (tentative)' : ''}`)
       return res.status(409).json({ error: 'Identity already registered with a different key' })
     }
 
