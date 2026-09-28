@@ -44,7 +44,10 @@ router.post('/identity',
         return res.status(403).json({ error: 'Wallet address does not match the owner of this token' })
       }
 
-      const identity = await dmService.registerIdentity(Number(userId), walletAddress, publicKey)
+      const identity = await dmService.registerIdentityForOwner(Number(userId), walletAddress, publicKey)
+      if (!identity) {
+        return res.status(409).json({ error: 'ownership changed during registration' })
+      }
 
       // Fan out to peer instances so other nodes' DmIdentity tables stay
       // in sync. Mirrors are otherwise blind to a user's DM-enable until
