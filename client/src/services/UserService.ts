@@ -567,9 +567,10 @@ export async function reconcileUsernameDrift(batchSize: number): Promise<{ check
  *   watcher can replay history (no checkpoint + startBlock, or a held batch).
  * - The clear is one conditional UPDATE, so a key the current owner registers
  *   at the same moment is never touched.
- * - A revert leaves the row as is (a misbehaving RPC can also produce one, and
- *   clearing a current owner's key would be worse than keeping a burned
- *   name's). Any other failure returns false so the caller can retry.
+ * - A revert with "invalid token ID" (the token does not exist on this
+ *   contract; CawProfile has no burn) leaves the row as is. Any other failure,
+ *   including a CALL_EXCEPTION without revert data from a misbehaving RPC,
+ *   returns false so the caller holds the checkpoint and retries.
  */
 export async function clearStaleDmKeys(
   tokenIds: number[],
@@ -589,7 +590,7 @@ export async function clearStaleDmKeys(
       try {
         owner = String(await readOwner(row.userId)).toLowerCase()
       } catch (err: any) {
-        if (err?.reason?.includes('invalid token ID') || err?.code === 'CALL_EXCEPTION') {
+        if (err?.code === 'CALL_EXCEPTION' && String(err?.reason ?? '').includes('invalid token ID')) {
           console.warn(`[UserService] clearStaleDmKeys: ownerOf(${row.userId}) reverted — leaving the key`)
           continue
         }
