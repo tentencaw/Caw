@@ -165,12 +165,6 @@ export async function pruneTokenIdFromAllSessions(tokenId: number): Promise<numb
   return pruned
 }
 
-export async function isAuthorized(token: string, tokenId: number): Promise<boolean> {
-  const session = await getSession(token)
-  if (!session) return false
-  return session.authorizedTokenIds.includes(tokenId)
-}
-
 export async function deleteSession(token: string): Promise<void> {
   await redis.del(KEY_PREFIX + token)
 }
