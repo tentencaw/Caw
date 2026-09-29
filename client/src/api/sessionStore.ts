@@ -30,6 +30,10 @@ const AUTH_SIG_PREFIX = 'caw:authSig:'
 const AUTH_SIG_TTL_SECONDS = 5 * 60
 
 export interface SessionData {
+  /** Tokens this session signed in for. NOT proof of current ownership: a
+   *  transfer only prunes this list, and a prune can be late or lost. Code that
+   *  grants anything from it should use ownedAuthorizedTokenIds
+   *  (middleware/auth.ts) or requireAuth({ verifyOwnership: true }). */
   authorizedTokenIds: number[]
   authorizedAddresses: string[] // lowercase
   createdAt: number
