@@ -1,5 +1,15 @@
 import { prisma } from '../../prismaClient'
-import groupService from '../DmService/groupService'
+import groupService, { GroupServiceError } from '../DmService/groupService'
+
+/**
+ * joinedAt and ModeratorAction.createdAt come from this node's clock, the
+ * transfer time from the chain. A node running ahead would date a grant made
+ * just before the transfer after it, and the buyer would keep it. Anything
+ * within this margin after the transfer is treated as before it; the cost is
+ * dropping a grant made in the first minute after a transfer, which a re-grant
+ * or re-invite restores.
+ */
+const CLOCK_MARGIN_MS = 60_000
 
 /**
  * Block timestamps by block number, so several transfers in one block read it
@@ -51,6 +61,7 @@ export async function releaseTransferredName(tokenId: number, transferAt: () => 
   // costs an RPC for names that hold a role or are in a group.
   if ((!user || user.role === 'USER') && memberships.length === 0) return
   const at = await transferAt()
+  const cutoff = new Date(at.getTime() + CLOCK_MARGIN_MS)
 
   if (user && user.role !== 'USER') {
     const lastSet = await prisma.moderatorAction.findFirst({
@@ -58,7 +69,7 @@ export async function releaseTransferredName(tokenId: number, transferAt: () => 
       orderBy: { createdAt: 'desc' },
       select: { createdAt: true },
     })
-    if (!lastSet || lastSet.createdAt < at) {
+    if (!lastSet || lastSet.createdAt < cutoff) {
       const from = user.role
       await prisma.$transaction(async tx => {
         await tx.user.update({ where: { tokenId }, data: { role: 'USER' } })
@@ -71,15 +82,27 @@ export async function releaseTransferredName(tokenId: number, transferAt: () => 
           },
         })
       })
-      console.warn(`[NftTransferWatcher] tokenId=${tokenId}: ${from} role dropped — ${lastSet ? 'it was set before the transfer' : 'no set_role record'}`)
+      console.warn(`[NftTransferWatcher] tokenId=${tokenId}: ${from} role dropped — ${lastSet ? 'last set before the transfer (or within a minute after it)' : 'no set_role record'}`)
     }
   }
 
-  const groups = memberships.filter(m => m.joinedAt < at)
+  const groups = memberships.filter(m => m.joinedAt < cutoff)
+  let left = 0
   for (const g of groups) {
-    await groupService.leaveGroup({ conversationId: g.conversationId, actorUserId: tokenId })
+    try {
+      await groupService.leaveGroup({ conversationId: g.conversationId, actorUserId: tokenId })
+      left++
+    } catch (err: any) {
+      // Left, removed, or the group deleted between the query above and this
+      // call: the end state is already reached, so don't hold the checkpoint.
+      if (err instanceof GroupServiceError && (err.code === 'NOT_PARTICIPANT' || err.code === 'NOT_FOUND')) {
+        console.warn(`[NftTransferWatcher] tokenId=${tokenId}: group ${g.conversationId} already left or gone, skipping`)
+        continue
+      }
+      throw err
+    }
   }
-  if (groups.length > 0) {
-    console.warn(`[NftTransferWatcher] tokenId=${tokenId}: left ${groups.length} group(s) joined before the transfer`)
+  if (left > 0) {
+    console.warn(`[NftTransferWatcher] tokenId=${tokenId}: left ${left} group(s) joined before the transfer`)
   }
 }
