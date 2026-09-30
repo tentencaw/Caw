@@ -40,7 +40,12 @@ export async function transferTime(
  *   ModeratorAction) before `at`, or was never logged; the drop is logged as
  *   `transfer_role_reset`;
  * - every group joined before `at` is left through leaveGroup, so ownership
- *   passes on and the group gets its usual system messages.
+ *   passes on and the group gets its usual system messages;
+ * - rows the previous owner kept under the tokenId and created before `at`
+ *   are deleted: bookmarks, scheduled posts, blocks they made, notifications
+ *   and dismissed offers. The routes that list them check the current owner,
+ *   which the next owner passes. A scheduled post already being submitted is
+ *   left to ScheduledPostProcessor; its signature no longer matches the owner.
  *
  * The block time is read only when there is something to release.
  *
@@ -57,9 +62,18 @@ export async function releaseTransferredName(tokenId: number, transferAt: () => 
     where: { userId: tokenId, leftAt: null, conversation: { is: { type: 'GROUP' } } },
     select: { conversationId: true, joinedAt: true },
   })
+  // Rows the previous owner kept under the tokenId; one indexed lookup each.
+  const hasPrivate = (await Promise.all([
+    prisma.bookmark.findFirst({ where: { userId: tokenId }, select: { userId: true } }),
+    prisma.scheduledCaw.findFirst({ where: { userId: tokenId }, select: { userId: true } }),
+    prisma.block.findFirst({ where: { blockerId: tokenId }, select: { blockerId: true } }),
+    prisma.notification.findFirst({ where: { userId: tokenId }, select: { userId: true } }),
+    prisma.notificationGroup.findFirst({ where: { userId: tokenId }, select: { userId: true } }),
+    prisma.marketplaceOfferDismissal.findFirst({ where: { userId: tokenId }, select: { userId: true } }),
+  ])).some(Boolean)
   // Nothing to release: skip the block read, so a replay of history only
-  // costs an RPC for names that hold a role or are in a group.
-  if ((!user || user.role === 'USER') && memberships.length === 0) return
+  // costs an RPC for names that hold a role, are in a group or have rows above.
+  if ((!user || user.role === 'USER') && memberships.length === 0 && !hasPrivate) return
   const at = await transferAt()
   const cutoff = new Date(at.getTime() + CLOCK_MARGIN_MS)
 
@@ -83,6 +97,23 @@ export async function releaseTransferredName(tokenId: number, transferAt: () => 
         })
       })
       console.warn(`[NftTransferWatcher] tokenId=${tokenId}: ${from} role dropped — ${lastSet ? 'last set before the transfer (or within a minute after it)' : 'no set_role record'}`)
+    }
+  }
+
+  if (hasPrivate) {
+    const [bookmarks, scheduled, blocks, notifications, notifGroups, dismissals] = await prisma.$transaction(async tx => [
+      await tx.bookmark.deleteMany({ where: { userId: tokenId, createdAt: { lt: cutoff } } }),
+      await tx.scheduledCaw.deleteMany({ where: { userId: tokenId, createdAt: { lt: cutoff }, status: { not: 'processing' } } }),
+      await tx.block.deleteMany({ where: { blockerId: tokenId, createdAt: { lt: cutoff } } }),
+      // Notifications before their groups: a group last touched before the
+      // cutoff is only referenced by notifications from before it.
+      await tx.notification.deleteMany({ where: { userId: tokenId, createdAt: { lt: cutoff } } }),
+      await tx.notificationGroup.deleteMany({ where: { userId: tokenId, lastEventAt: { lt: cutoff } } }),
+      await tx.marketplaceOfferDismissal.deleteMany({ where: { userId: tokenId, createdAt: { lt: cutoff } } }),
+    ])
+    const n = bookmarks.count + scheduled.count + blocks.count + notifications.count + notifGroups.count + dismissals.count
+    if (n > 0) {
+      console.warn(`[NftTransferWatcher] tokenId=${tokenId}: deleted ${n} row(s) kept by the previous owner (bookmarks ${bookmarks.count}, scheduled ${scheduled.count}, blocks ${blocks.count}, notifications ${notifications.count}+${notifGroups.count} groups, offer dismissals ${dismissals.count})`)
     }
   }
 
