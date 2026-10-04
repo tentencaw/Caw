@@ -187,14 +187,15 @@ export async function writeAddressesForNetwork(config, clientDir) {
     CAW_NAME_MARKETPLACE_ADDRESS: l1.CawProfileMarketplace,
     CAW_NAMES_L2_MAINNET_ADDRESS: l1.CawProfileLedger,
     CAW_ACTIONS_MAINNET_ADDRESS: l1.CawActions,
-    // L1-side ERC-1271 sibling + the EIP-7702 SmartEOA delegate. The FE reads
-    // both (population routing + sponsored-flow signing), so they must be in
-    // addresses.ts — previously omitted, which broke the FE build (#196).
-    CAW_ACTIONS_ERC1271_ADDRESS: l1.CawActionsERC1271,
+    // EIP-7702 SmartEOA delegate (L1). Must be in addresses.ts — previously
+    // omitted, which broke the FE build (#196).
     SMART_EOA_ADDRESS: l1.SmartEOA,
     // Per-Network-storage-chain — resolved here, not multi-chain in the codebase.
     CAW_NAMES_L2_ADDRESS: l2.CawProfileLedger,
     CAW_ACTIONS_ADDRESS: l2.CawActions,
+    // ERC-1271 sibling on the Network's storage chain, the same choice as the
+    // addresses.ts writer in solidity/scripts/deploy.js.
+    CAW_ACTIONS_ERC1271_ADDRESS: chainKey === 'L1' ? l1.CawActionsERC1271 : l2.CawActionsERC1271,
     CAW_ACTIONS_ARCHIVE_ADDRESS: l2.CawActionsArchive,
     CAW_CHALLENGE_RELAY_ADDRESS: l2.CawChallengeRelay,
   }
