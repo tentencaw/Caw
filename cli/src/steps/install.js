@@ -181,12 +181,12 @@ export async function runInstall(nodeType, config, installDir) {
 
     const spinner3 = ora('Installing frontend dependencies...').start()
     try {
-      // --ignore-platform lets yarn skip platform-incompatible optional
-      // packages (e.g. @rollup/rollup-darwin-x64 if someone pinned it).
-      // Drop --frozen-lockfile because the lockfile is generated on a Mac
-      // and re-resolves on Linux — strict mode rejects legitimate platform
-      // differences.
-      await runStreamed('yarn', ['install', '--ignore-platform'], { cwd: frontendDir })
+      // Install what the committed yarn.lock pins, as `caw update` does
+      // (update.js). yarn still installs only this host's platform-specific
+      // optional packages (esbuild, rollup, ...). --ignore-platform installed
+      // every platform's binaries, and the non-frozen install rewrote
+      // yarn.lock, leaving the checkout dirty.
+      await runStreamed('yarn', ['install', '--frozen-lockfile'], { cwd: frontendDir })
       spinner3.succeed('Frontend dependencies installed')
     } catch (e) {
       spinner3.fail('Failed to install frontend dependencies')
